@@ -1,0 +1,61 @@
+SET 'auto.offset.reset'='earliest';
+
+CREATE STREAM credit_payment_history (
+    customer_id VARCHAR KEY,
+    credit_type VARCHAR,
+    paid_on_time BOOLEAN
+  ) WITH (
+    KAFKA_TOPIC = 'credit_payment_history',
+    VALUE_FORMAT = 'JSON',
+    KEY_FORMAT = 'JSON'
+  );
+
+CREATE TABLE credit_payment_history_tbl AS
+    SELECT customer_id,
+          ROUND(CAST(SUM(CASE WHEN paid_on_time = true THEN 1 ELSE 0 END) AS DOUBLE) / CAST(COUNT(*) AS DOUBLE) * 100, 2) as PCT_PAID_ON_TIME
+    FROM credit_payment_history
+    GROUP BY customer_id;
+
+CREATE TABLE credit_utilization_tbl (
+    customer_id VARCHAR PRIMARY KEY,
+    total_balance BIGINT,
+    total_limit BIGINT
+  ) WITH (
+    KAFKA_TOPIC = 'credit_utilization',
+    VALUE_FORMAT = 'JSON',
+    KEY_FORMAT = 'JSON'
+  );
+
+CREATE STREAM credit_applications (
+    customer_id VARCHAR KEY,
+    credit_type VARCHAR,
+    amount BIGINT
+  ) WITH (
+    KAFKA_TOPIC = 'credit_applications',
+    VALUE_FORMAT = 'JSON',
+    KEY_FORMAT = 'JSON'
+  );
+
+CREATE STREAM approved_applications AS
+SELECT  a.customer_id,
+        a.credit_type,
+        a.amount,
+        cp.PCT_PAID_ON_TIME,
+        ROUND(CAST(cu.total_balance AS DOUBLE) / CAST(cu.total_limit AS DOUBLE) * 100, 2) as PCT_CREDIT_UTILIZATION
+FROM credit_applications a
+INNER JOIN credit_payment_history_tbl cp ON (a.customer_id = cp.customer_id)
+INNER JOIN credit_utilization_tbl cu ON (a.customer_id = cu.customer_id)
+WHERE PCT_PAID_ON_TIME > 90 AND ROUND(CAST(cu.total_balance AS DOUBLE) / CAST(cu.total_limit AS DOUBLE) * 100, 2) < 30
+emit changes;
+
+CREATE STREAM rejected_applications AS
+SELECT  a.customer_id,
+        a.credit_type,
+        a.amount,
+        cp.PCT_PAID_ON_TIME,
+        ROUND(CAST(cu.total_balance AS DOUBLE) / CAST(cu.total_limit AS DOUBLE) * 100, 2) as PCT_CREDIT_UTILIZATION
+FROM credit_applications a
+INNER JOIN credit_payment_history_tbl cp ON (a.customer_id = cp.customer_id)
+INNER JOIN credit_utilization_tbl cu ON (a.customer_id = cu.customer_id)
+WHERE PCT_PAID_ON_TIME <= 90 AND ROUND(CAST(cu.total_balance AS DOUBLE) / CAST(cu.total_limit AS DOUBLE) * 100, 2) >= 30
+emit changes;
